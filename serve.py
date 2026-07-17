@@ -10,11 +10,12 @@ import math
 import os
 import re
 import secrets
+import sys
 import time
 import urllib.request
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 
-PORT = 8000
+DEFAULT_PORT = 8000
 XKCD_LATEST = "https://xkcd.com/info.0.json"
 XKCD_COMIC = "https://xkcd.com/{num}/info.0.json"
 
@@ -156,5 +157,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    print(f"Serving on http://localhost:{PORT}")
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    # port: first CLI argument, else $PORT, else 8000
+    port = int(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PORT", DEFAULT_PORT))
+    print(f"Serving on http://localhost:{port}")
+    HTTPServer(("127.0.0.1", port), Handler).serve_forever()

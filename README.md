@@ -6,7 +6,9 @@ haven't seen in a while.
 ## Run
 
 ```sh
-python3 serve.py
+python3 serve.py            # default port 8000
+python3 serve.py 8123       # or pass the port as an argument
+PORT=8123 python3 serve.py  # or set it via the environment
 ```
 
 Then open <http://localhost:8000>. (The tiny server is needed because

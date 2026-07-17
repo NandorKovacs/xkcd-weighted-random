@@ -1,0 +1,188 @@
+/* Styles lifted from xkcd.com/s/7d94e0.css to match the original site. */
+
+body {
+  background-color: #96A8C8;
+  text-align: center;
+  font-size: 16px;
+  font-variant: small-caps;
+  font-family: Lucida, Helvetica, sans-serif;
+  font-weight: 500;
+  margin: 0;
+  padding: 20px 10px;
+}
+
+a {
+  color: #96A8C8;
+  text-decoration: none;
+  font-weight: 800;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+img {
+  border: 0;
+}
+
+.box { /* any of the box layouts & white backgrounds */
+  background: white;
+  border-style: solid;
+  border-width: 1.5px;
+  border-color: #071419;
+  border-radius: 12px;
+}
+
+#masthead {
+  position: absolute;
+  top: 15px;
+  left: 20px;
+  padding: 12px 16px;
+  text-align: center;
+}
+
+#attribution {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-style: italic;
+  font-weight: 800;
+  line-height: 140%;
+}
+
+#attribution a {
+  color: #282B30;
+}
+
+#settings {
+  position: absolute;
+  top: 15px;
+  right: 20px;
+  padding: 8px 12px;
+  text-align: left;
+  z-index: 1;
+}
+
+#settings-toggle {
+  background-color: #6E7B91;
+  color: #FFF;
+  border: 1.5px solid #333;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 1.5px 12px;
+  border-radius: 3px;
+  box-shadow: 0 0 5px 0 gray;
+  cursor: pointer;
+}
+
+#settings-toggle:hover, #settings-toggle:focus {
+  background-color: #FFF;
+  color: #6E7B91;
+  box-shadow: none;
+}
+
+#settings-panel {
+  width: 220px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+#settings-panel label {
+  display: block;
+  font-weight: 800;
+}
+
+.setting-row {
+  margin: 4px 0;
+  white-space: nowrap;
+  font-weight: 800;
+}
+
+#settings-panel small {
+  display: block;
+  margin: 2px 0 10px;
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+  color: #444;
+}
+
+#set-minute-prob {
+  width: 55px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.cutoff-field {
+  width: 38px;
+  font: inherit;
+  font-size: 13px;
+}
+
+#middleContainer {
+  width: 780px;
+  max-width: 100%;
+  margin: 5px auto;
+  padding: 10px 0;
+}
+
+#ctitle {
+  margin: 10px;
+  font-size: 21px;
+  font-weight: 800;
+}
+
+ul.comicNav {
+  padding: 0;
+  list-style-type: none;
+}
+
+ul.comicNav li {
+  display: inline;
+}
+
+ul.comicNav li a {
+  background-color: #6E7B91;
+  color: #FFF;
+  border: 1.5px solid #333;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 1.5px 12px;
+  margin: 0 4px;
+  text-decoration: none;
+  border-radius: 3px;
+  box-shadow: 0 0 5px 0 gray;
+}
+
+ul.comicNav a:hover, ul.comicNav a:focus {
+  background-color: #FFF;
+  color: #6E7B91;
+  box-shadow: none;
+}
+
+#comic {
+  margin: 10px 0;
+}
+
+#comic img {
+  max-width: 740px;
+  height: auto;
+}
+
+.comicInfo {
+  font-size: 12px;
+  font-style: italic;
+  font-weight: 800;
+}
+
+#comic-alt {
+  display: inline-block;
+  max-width: 700px;
+  margin-top: 8px;
+}
+
+#status {
+  min-height: 1em;
+  margin: 4px 0 0;
+}

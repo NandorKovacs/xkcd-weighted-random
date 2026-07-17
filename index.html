@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>xkcd — weighted random</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div id="masthead" class="box">
+    <a href="https://xkcd.com/" target="_blank" rel="noopener">
+      <img src="/xkcd-logo.png" alt="xkcd.com logo" width="185" height="83">
+    </a>
+    <span id="attribution">
+      Comics by <a href="https://xkcd.com/about/" target="_blank" rel="noopener">Randall Munroe</a><br>
+      <a href="https://creativecommons.org/licenses/by-nc/2.5/" target="_blank" rel="noopener">CC BY-NC 2.5</a>
+    </span>
+  </div>
+
+  <div id="settings" class="box">
+    <button id="settings-toggle" type="button">Settings ▾</button>
+    <div id="settings-panel" hidden>
+      <label for="set-minute-prob">Probability of seeing a comic you saw a
+        minute ago, in contrast to one you have never seen:</label>
+      <div class="setting-row">
+        <input type="number" id="set-minute-prob" min="0" max="100" step="any" value="1"> %
+      </div>
+      <small>100 = time since seen is ignored (pure random), 0 = a just-seen
+        comic almost never reappears (its weight is floored at one millisecond
+        of time-since-seen, ~4·10⁻¹⁰ of a never-seen comic); in between, a
+        comic's chance grows linearly with time since you saw it</small>
+      <label for="set-cutoff-days">Forget after</label>
+      <div class="setting-row">
+        <input type="number" id="set-cutoff-days" class="cutoff-field" min="0" step="1" value="180"> d
+        <input type="number" id="set-cutoff-hours" class="cutoff-field" min="0" step="1" value="0"> h
+        <input type="number" id="set-cutoff-mins" class="cutoff-field" min="0" step="1" value="0"> min
+      </div>
+      <small>comics seen longer ago count as unseen again (all zero = never forget)</small>
+    </div>
+  </div>
+
+  <div id="middleContainer" class="box">
+    <div id="ctitle">Loading…</div>
+
+    <ul class="comicNav">
+      <li><a href="#" data-nav="first">|&lt;</a></li>
+      <li><a href="#" data-nav="prev" accesskey="p">&lt; Prev</a></li>
+      <li><a href="#" data-nav="random" accesskey="r">Random</a></li>
+      <li><a href="#" data-nav="next" accesskey="n">Next &gt;</a></li>
+      <li><a href="#" data-nav="last">&gt;|</a></li>
+    </ul>
+
+    <div id="comic">
+      <img id="comic-img" alt="">
+    </div>
+
+    <ul class="comicNav">
+      <li><a href="#" data-nav="first">|&lt;</a></li>
+      <li><a href="#" data-nav="prev">&lt; Prev</a></li>
+      <li><a href="#" data-nav="random">Random</a></li>
+      <li><a href="#" data-nav="next">Next &gt;</a></li>
+      <li><a href="#" data-nav="last">&gt;|</a></li>
+    </ul>
+
+    <br>
+    Permanent link to this comic: <a id="comic-link" href="#" target="_blank" rel="noopener"></a><br>
+    <span id="comic-alt" class="comicInfo"></span>
+    <p id="status" class="comicInfo"></p>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

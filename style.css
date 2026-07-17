@@ -166,7 +166,7 @@ ul.comicNav a:hover, ul.comicNav a:focus {
 }
 
 #comic img {
-  max-width: 740px;
+  max-width: min(740px, 100%);
   height: auto;
 }
 
@@ -185,4 +185,14 @@ ul.comicNav a:hover, ul.comicNav a:focus {
 #status {
   min-height: 1em;
   margin: 4px 0 0;
+}
+
+/* Not enough room for the masthead beside the 780px content column:
+   put it in the normal flow, centered above the comic. */
+@media (max-width: 1260px) {
+  #masthead {
+    position: static;
+    width: fit-content;
+    margin: 0 0 10px 10px; /* body pads 10px -> 20px from the edge, like the absolute version */
+  }
 }

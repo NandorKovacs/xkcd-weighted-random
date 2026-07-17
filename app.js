@@ -81,13 +81,11 @@ function numFromPath() {
   return m ? Number(m[1]) : null;
 }
 
-function show(comic, push = true) {
+function show(comic, updateUrl = true) {
   currentNum = comic.num;
   const url = `/${comic.num}/`;
-  if (push && location.pathname !== url) {
+  if (updateUrl && location.pathname !== url) {
     history.pushState({ num: comic.num }, "", url);
-  } else {
-    history.replaceState({ num: comic.num }, "", url);
   }
   els.title.textContent = comic.safe_title || comic.title;
   els.img.src = comic.img;
@@ -109,7 +107,7 @@ function step(num, dir) {
 
 let busy = false;
 
-async function goTo(pick, push = true) {
+async function goTo(pick, updateUrl = true) {
   if (busy) return;
   busy = true;
   els.status.textContent = "Loading…";
@@ -118,7 +116,7 @@ async function goTo(pick, push = true) {
       latestNum = (await fetchJson("/api/latest")).num;
     }
     const num = await pick();
-    show(await fetchJson(`/api/comic/${num}`), push);
+    show(await fetchJson(`/api/comic/${num}`), updateUrl);
     await markSeen(num); // before releasing `busy`, so the next pick sees it
     els.status.textContent = "";
   } catch (e) {
@@ -186,13 +184,14 @@ fetchJson("/api/state")
   .then((state) => renderSettings(state.settings))
   .catch(() => {}); // controls keep their markup defaults
 
-// back/forward: load the comic encoded in the URL without pushing again
+// back/forward: load the comic encoded in the URL ("/" = the newest one)
+// without touching the history again
 window.addEventListener("popstate", () => {
-  const num = numFromPath();
+  const num = numFromPath() ?? latestNum;
   if (num && num !== currentNum) goTo(() => num, false);
 });
 
-// on page load, show the comic from the URL if there is one, else draw
-// randomly; replaceState either way so "/" doesn't linger in history
+// on page load, show the comic from the URL if there is one, else the
+// newest comic — like xkcd.com, where "/" is the latest comic
 const startNum = numFromPath();
-goTo(startNum ? () => startNum : actions.random, false);
+goTo(startNum ? () => startNum : actions.last, false);

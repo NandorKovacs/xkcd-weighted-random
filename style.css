@@ -33,12 +33,26 @@ img {
   border-radius: 12px;
 }
 
-#masthead {
+#sidebar {
   position: absolute;
   top: 15px;
   left: 20px;
+}
+
+#masthead {
   padding: 12px 16px;
   text-align: center;
+}
+
+#github-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 10px;
+  padding: 7px 10px;
+  font-size: 14px;
+  color: #282B30;
 }
 
 #attribution {
@@ -187,10 +201,10 @@ ul.comicNav a:hover, ul.comicNav a:focus {
   margin: 4px 0 0;
 }
 
-/* Not enough room for the masthead beside the 780px content column:
-   put it in the normal flow, centered above the comic. */
+/* Not enough room for the sidebar beside the 780px content column:
+   put it in the normal flow above the comic. */
 @media (max-width: 1260px) {
-  #masthead {
+  #sidebar {
     position: static;
     width: fit-content;
     margin: 0 0 10px 10px; /* body pads 10px -> 20px from the edge, like the absolute version */

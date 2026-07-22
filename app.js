@@ -3,7 +3,6 @@
 // Seen-history is kept per user: the server identifies each browser by an
 // auto-assigned cookie (no login) and stores the timestamps under that id.
 
-const UNSEEN_HEAD_START = 30 * 24 * 60 * 60 * 1000; // unseen comics act as if seen 30 days before your first visit
 const MISSING_COMIC = 404;           // xkcd 404 famously does not exist
 
 const els = {
@@ -20,48 +19,6 @@ const els = {
   cutoffHours: document.getElementById("set-cutoff-hours"),
   cutoffMins: document.getElementById("set-cutoff-mins"),
 };
-
-// A never-seen comic weighs U = its pseudo-age (it pretends it was last seen
-// UNSEEN_HEAD_START before your first visit). The minuteAgoRatio setting pins
-// the weight of a comic seen one minute ago at ratio * U, and every other
-// comic falls on the straight line through those two points as a function of
-// time since seen:
-//   w(t) = U * (ratio + (1 - ratio) * (t - 1min) / (U - 1min))
-// ratio = 1 -> every comic weighs U (pure random); ratio = 0 -> weight grows
-// linearly from ~0 at one minute up to U for never-seen.
-// A comic seen more than the cutoff ago counts as unseen again.
-// The state (and the clock the weights are computed against) comes from the
-// server, which keys it on the user's cookie.
-async function pickWeightedRandom(latestNum) {
-  const { now, firstVisit, seen, settings } = await fetchJson("/api/state");
-  const unseenLastSeen = firstVisit - UNSEEN_HEAD_START;
-  const cutoffMs = settings.cutoffMinutes > 0 ? settings.cutoffMinutes * 60000 : Infinity;
-  const U = now - unseenLastSeen; // weight of a never-seen comic
-  const ratio = settings.minuteAgoRatio;
-  const MINUTE_MS = 60000;
-
-  const weights = new Float64Array(latestNum + 1); // index = comic number
-  let total = 0;
-  for (let n = 1; n <= latestNum; n++) {
-    if (n === MISSING_COMIC) continue;
-    let lastSeen = seen[n] ?? unseenLastSeen;
-    if (now - lastSeen > cutoffMs) lastSeen = unseenLastSeen; // forgotten
-    const t = now - lastSeen;
-    const w = U * (ratio + ((1 - ratio) * (t - MINUTE_MS)) / (U - MINUTE_MS));
-    // Floor: 1 (= one millisecond of time-since-seen). Even at ratio 0 a
-    // just-seen comic keeps a 1/U relative chance vs a never-seen one
-    // (~4e-10 for U = 30 days). Also catches t < 1min extrapolating below 0.
-    weights[n] = Math.max(w, 1);
-    total += weights[n];
-  }
-
-  let r = Math.random() * total;
-  for (let n = 1; n <= latestNum; n++) {
-    r -= weights[n];
-    if (r < 0) return n;
-  }
-  return latestNum; // float rounding fallback
-}
 
 function markSeen(num) {
   return fetch(`/api/seen/${num}`, { method: "POST" });
@@ -106,18 +63,65 @@ function step(num, dir) {
 }
 
 let busy = false;
+// Outstanding markSeen promise from the previous navigation; awaited at the
+// start of the next pick so invariant 6 holds without blocking the UI.
+let pendingMark = null;
 
+// goTo accepts one of two pick shapes:
+//
+//   (A) Random: pick() returns a Promise<comic-object>.
+//       The server picked, marked seen, and resolved the image URL in one call.
+//       latestNum is NOT bootstrapped on this path (§6.4) — it may remain null.
+//
+//   (B) Number: pick() is a sync thunk returning a number.
+//       latestNum is bootstrapped first when null; then pick() is called so
+//       that step() inside the thunk can clamp to the real latest.
+//       After the comic is shown, markSeen is fired without awaiting (C6);
+//       the next goTo call awaits it before picking (invariant 6).
+//
+// Shape detection: call pick() once.  If the result is a Promise → random
+// path (A).  Otherwise → number path (B); if latestNum was null, bootstrap
+// it and call pick() again so step()-based thunks clamp correctly.
 async function goTo(pick, updateUrl = true) {
   if (busy) return;
   busy = true;
   els.status.textContent = "Loading…";
   try {
-    if (latestNum === null) {
-      latestNum = (await fetchJson("/api/latest")).num;
+    // Await any outstanding markSeen from the previous navigation before
+    // picking, so the next pick always sees the previous mark (invariant 6).
+    // Clear it first: a failed mark must not brick every later navigation.
+    if (pendingMark) {
+      const mark = pendingMark;
+      pendingMark = null;
+      await mark.catch(() => {});
     }
-    const num = await pick();
-    show(await fetchJson(`/api/comic/${num}`), updateUrl);
-    await markSeen(num); // before releasing `busy`, so the next pick sees it
+
+    const probe = pick();
+
+    if (probe instanceof Promise) {
+      // Random path (§6.4): /api/random returns the full comic object.
+      // No latestNum needed; no client-side markSeen call.
+      show(await probe, updateUrl);
+    } else {
+      // Number path (first/prev/next/last/popstate/page-load).
+      // Bootstrap latestNum when absent so step() can clamp correctly.
+      // If latestNum was null when pick() ran above, the thunk may have
+      // received a wrong value from step() (Math.min clamps to 0), so
+      // call pick() again with latestNum now set.
+      if (latestNum === null) {
+        latestNum = (await fetchJson("/api/latest")).num;
+        // Re-evaluate: busy=true so currentNum/latestNum are stable.
+        const num = pick() ?? latestNum;
+        show(await fetchJson(`/api/comic/${num}`), updateUrl);
+      } else {
+        const num = probe ?? latestNum;
+        show(await fetchJson(`/api/comic/${num}`), updateUrl);
+      }
+      // Fire markSeen without awaiting (C6); store the promise so the next
+      // pick can await it before reading seen-history (invariant 6).
+      pendingMark = markSeen(currentNum);
+    }
+
     els.status.textContent = "";
   } catch (e) {
     els.status.textContent = `Failed to load comic: ${e.message}`;
@@ -127,11 +131,11 @@ async function goTo(pick, updateUrl = true) {
 }
 
 const actions = {
-  first: () => 1,
-  prev: () => step(currentNum ?? 2, -1),
-  random: () => pickWeightedRandom(latestNum),
-  next: () => step(currentNum ?? latestNum - 1, +1),
-  last: () => latestNum,
+  first:  () => 1,
+  prev:   () => step(currentNum ?? 2, -1),
+  random: () => fetchJson("/api/random"),   // returns a Promise<comic-object>
+  next:   () => step(currentNum ?? (latestNum !== null ? latestNum - 1 : 1), +1),
+  last:   () => latestNum,  // null before bootstrap; goTo re-evaluates after fetching
 };
 
 document.querySelectorAll("[data-nav]").forEach((a) => {
@@ -185,7 +189,10 @@ fetchJson("/api/state")
   .catch(() => {}); // controls keep their markup defaults
 
 // back/forward: load the comic encoded in the URL ("/" = the newest one)
-// without touching the history again
+// without touching the history again.
+// latestNum may be null here if the user's first action was a Random click
+// (which doesn't bootstrap latestNum); goTo() will fetch /api/latest on the
+// number path, which popstate always uses.
 window.addEventListener("popstate", () => {
   const num = numFromPath() ?? latestNum;
   if (num && num !== currentNum) goTo(() => num, false);

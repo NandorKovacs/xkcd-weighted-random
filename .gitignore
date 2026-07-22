@@ -1,3 +1,6 @@
 user-data.json
 __pycache__/
 .omc/
+data.db
+data.db-wal
+data.db-shm

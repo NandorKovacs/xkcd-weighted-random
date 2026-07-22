@@ -113,9 +113,11 @@ function show(comic, updateUrl = true) {
     history.pushState({ num: comic.num }, "", url);
   }
   els.title.textContent = comic.safe_title || comic.title;
-  setComicImage(comic);
+  // Stamp alt/title before setComicImage: its apply() can run synchronously
+  // (scraped img2x verdict) and copies these off the current element.
   els.img.alt = comic.safe_title || comic.title;
   els.img.title = comic.alt; // hover for the alt text, like the original
+  setComicImage(comic);
   els.alt.textContent = comic.alt;
   els.link.href = `https://xkcd.com/${comic.num}/`;
   els.link.textContent = `https://xkcd.com/${comic.num}/`;

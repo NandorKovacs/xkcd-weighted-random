@@ -43,6 +43,27 @@ function numFromPath() {
   return m ? Number(m[1]) : null;
 }
 
+// Comics since ~#1084 have a double-resolution variant next to the 1x file,
+// but the JSON API only carries the 1x URL — xkcd.com's own pages hardcode
+// the 2x in srcset. Offer it optimistically; when it 404s (older comics),
+// drop the srcset and reload the 1x, since browsers don't fall back between
+// srcset candidates on their own.
+function setComicImage(url) {
+  const url2x = url.replace(/\.(png|jpe?g|gif)$/i, "_2x.$1");
+  els.img.onerror = null;
+  if (url2x !== url) {
+    els.img.onerror = () => {
+      els.img.onerror = null; // a failing 1x must not retry in a loop
+      els.img.removeAttribute("srcset");
+      els.img.src = url;
+    };
+    els.img.srcset = `${url2x} 2x`;
+  } else {
+    els.img.removeAttribute("srcset");
+  }
+  els.img.src = url;
+}
+
 function show(comic, updateUrl = true) {
   currentNum = comic.num;
   const url = `/${comic.num}/`;
@@ -50,7 +71,7 @@ function show(comic, updateUrl = true) {
     history.pushState({ num: comic.num }, "", url);
   }
   els.title.textContent = comic.safe_title || comic.title;
-  els.img.src = comic.img;
+  setComicImage(comic.img);
   els.img.alt = comic.safe_title || comic.title;
   els.img.title = comic.alt; // hover for the alt text, like the original
   els.alt.textContent = comic.alt;

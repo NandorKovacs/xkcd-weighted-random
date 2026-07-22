@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
@@ -32,6 +33,7 @@ UID_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 # Module-level constants that tests can patch
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user-data.json")
+SEED_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "has2x-seed.json")
 
 # Pick constants (match app.js exactly)
 UNSEEN_HEAD_START = 30 * 24 * 60 * 60 * 1000  # 30 days in ms
@@ -53,6 +55,26 @@ def fetch_upstream(url):
     req = urllib.request.Request(url, headers={"User-Agent": "xkcd-weighted-random"})
     with urllib.request.urlopen(req, timeout=10) as resp:
         return resp.read()
+
+
+def head_upstream(url):
+    """Check whether url exists, without downloading it.
+
+    Returns True on 200 and False on 404 — the two definitive answers.
+    Anything else (timeout, 5xx) raises, so callers never turn a transient
+    failure into a stored verdict.
+    """
+    print(f"[upstream] HEAD {url}")
+    req = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": "xkcd-weighted-random"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10):
+            return True
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +122,14 @@ def init_db():
             json    BLOB NOT NULL,
             fetched INTEGER NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS has2x (
+            num   INTEGER PRIMARY KEY,
+            has2x INTEGER NOT NULL
+        );
     """)
+
+    seed_2x_verdicts(conn)
 
     # Migration from user-data.json
     if not os.path.exists(DATA_FILE):
@@ -151,6 +180,42 @@ def init_db():
 
     os.rename(DATA_FILE, migrated_path)
     print(f"[migration] done; renamed {DATA_FILE} to {migrated_path}")
+
+
+def seed_2x_verdicts(conn):
+    """Import the repo's scraped 2x list (has2x-seed.json) into has2x.
+
+    INSERT OR IGNORE: verdicts the live scraper already recorded win, and the
+    import is idempotent, so it runs on every boot. Comics newer than the
+    seed's max stay unrecorded — the background scraper covers them.
+    """
+    try:
+        with open(SEED_FILE) as f:
+            seed = json.load(f)
+        has = set(seed["has2x"])
+        top = int(seed["max"])
+    except OSError:
+        return  # no seed file — the scraper builds the list from scratch
+    except (ValueError, KeyError, TypeError) as e:
+        print(f"[seed] unreadable {SEED_FILE}: {e}")
+        return
+    before = conn.total_changes
+    conn.execute("BEGIN")
+    try:
+        for n in range(1, top + 1):
+            if n == MISSING_COMIC:
+                continue
+            conn.execute(
+                "INSERT OR IGNORE INTO has2x (num, has2x) VALUES (?, ?)",
+                (n, 1 if n in has else 0),
+            )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    added = conn.total_changes - before
+    if added:
+        print(f"[seed] imported {added} 2x verdicts (through comic {top})")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +323,130 @@ def store_comic_in_db(num, body_bytes):
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def resolve_comic(num, latest):
+    """Return comic JSON bytes from DB cache, fetching upstream on miss.
+
+    Returns None on failure. Does NOT write to DB if num == latest (§6.1).
+    """
+    cached = get_comic_from_db(num)
+    if cached is not None:
+        return cached
+
+    url = XKCD_COMIC.format(num=num)
+    try:
+        body = fetch_upstream(url)
+    except Exception as e:
+        print(f"[comic] upstream fetch failed for {num}: {e}")
+        return None
+
+    if not (latest is not None and num == latest):
+        try:
+            store_comic_in_db(num, body)
+        except Exception as e:
+            print(f"[comic] failed to cache comic {num}: {e}")
+
+    return body
+
+
+# ---------------------------------------------------------------------------
+# 2x variant scrape — which comics have a double-resolution image
+# ---------------------------------------------------------------------------
+# xkcd.com's pages know statically which comics have a _2x file; the JSON API
+# doesn't carry it. The scraper builds the same knowledge once — a HEAD probe
+# per comic, recorded in the has2x table — and tops it up as new comics
+# publish. Outgoing comic JSON gets the verdict stamped in as "img2x", so the
+# client never has to discover 2x existence with a trial request.
+
+_2X_RE = re.compile(r"\.(png|jpe?g|gif)$", re.I)
+SCRAPE_DELAY = 0.3  # seconds between probed comics; politeness to xkcd.com
+
+
+def derive_2x_url(img):
+    """The _2x URL for a comic image URL, or None if none can exist."""
+    if not img:
+        return None
+    url2x = _2X_RE.sub(lambda m: "_2x." + m.group(1), img)
+    return url2x if url2x != img else None
+
+
+def scrape_missing_2x():
+    """Record a 2x verdict for every archive comic that lacks one.
+
+    Skips the current latest (never cached, §6.1 — covered on a later pass
+    once a newer comic exists) and leaves comics unrecorded on transient
+    probe failures so the next pass retries them. Returns verdicts recorded.
+    """
+    latest = get_latest()
+    if latest is None:
+        return 0
+    conn = db()
+    have = {r[0] for r in conn.execute("SELECT num FROM has2x").fetchall()}
+    done = 0
+    for num in range(1, latest + 1):
+        if num == MISSING_COMIC or num == latest or num in have:
+            continue
+        body = resolve_comic(num, latest)  # warms the comics cache as it goes
+        if body is None:
+            continue  # upstream trouble — retry next pass
+        try:
+            img = json.loads(body).get("img", "")
+        except ValueError:
+            continue
+        url2x = derive_2x_url(img)
+        if url2x is None:
+            verdict = 0
+        else:
+            try:
+                verdict = 1 if head_upstream(url2x) else 0
+            except Exception as e:
+                print(f"[scrape] probe failed for {num}: {e}")
+                continue  # unknown — retry next pass
+        conn.execute(
+            "INSERT OR REPLACE INTO has2x (num, has2x) VALUES (?, ?)",
+            (num, verdict),
+        )
+        done += 1
+        if done % 100 == 0:
+            print(f"[scrape] {done} verdicts recorded this pass")
+        if SCRAPE_DELAY:
+            time.sleep(SCRAPE_DELAY)
+    return done
+
+
+def scrape_2x_forever():
+    """Background loop: fill missing 2x verdicts, then re-check periodically.
+
+    The re-check period matches the latest-comic cache TTL, so a newly
+    published comic gets its verdict within minutes of appearing.
+    """
+    while True:
+        try:
+            n = scrape_missing_2x()
+            if n:
+                print(f"[scrape] recorded {n} 2x verdicts")
+        except Exception as e:
+            print(f"[scrape] pass failed: {e}")
+        time.sleep(_LATEST_TTL_MS / 1000)
+
+
+def with_img2x(body):
+    """Stamp the scraped 2x verdict into outgoing comic JSON as "img2x".
+
+    URL when the comic has a 2x file, null when it definitively hasn't,
+    key absent when not yet scraped (the client probes on its own then).
+    """
+    try:
+        obj = json.loads(body)
+        num = obj.get("num")
+    except (ValueError, AttributeError):
+        return body
+    row = db().execute("SELECT has2x FROM has2x WHERE num=?", (num,)).fetchone()
+    if row is None:
+        return body
+    obj["img2x"] = derive_2x_url(obj.get("img", "")) if row[0] else None
+    return json.dumps(obj).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -441,9 +630,10 @@ class Handler(SimpleHTTPRequestHandler):
             raise
 
         # Step 3: resolve comic JSON — outside the transaction
-        comic_bytes = self._resolve_comic(picked, latest)
+        comic_bytes = resolve_comic(picked, latest)
         if comic_bytes is None:
             return self.send_json(502, {"error": f"failed to fetch comic {picked}"})
+        comic_bytes = with_img2x(comic_bytes)
 
         # Step 4: return comic JSON
         self.send_response(200)
@@ -457,9 +647,10 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_comic(self, num):
         latest = get_latest()  # needed for §6.1 n==latest check
-        comic_bytes = self._resolve_comic(num, latest)
+        comic_bytes = resolve_comic(num, latest)
         if comic_bytes is None:
             return self.send_json(502, {"error": f"failed to fetch comic {num}"})
+        comic_bytes = with_img2x(comic_bytes)
 
         is_latest = (latest is not None and num == latest)
         if is_latest:
@@ -473,33 +664,6 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(comic_bytes)))
         self.end_headers()
         self.wfile.write(comic_bytes)
-
-    def _resolve_comic(self, num, latest):
-        """Return comic JSON bytes from DB cache, fetching upstream on miss.
-
-        Returns None on failure. Does NOT write to DB if num == latest.
-        """
-        cached = get_comic_from_db(num)
-        if cached is not None:
-            return cached
-
-        # Cache miss — fetch upstream (no lock held)
-        url = XKCD_COMIC.format(num=num)
-        try:
-            body = fetch_upstream(url)
-        except Exception as e:
-            print(f"[comic] upstream fetch failed for {num}: {e}")
-            return None
-
-        # Only cache if it's not the current latest (§6.1)
-        is_latest = (latest is not None and num == latest)
-        if not is_latest:
-            try:
-                store_comic_in_db(num, body)
-            except Exception as e:
-                print(f"[comic] failed to cache comic {num}: {e}")
-
-        return body
 
     # --- /api/seen/<n> ------------------------------------------------------
 
@@ -671,6 +835,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     init_db()
+    threading.Thread(target=scrape_2x_forever, daemon=True).start()
     port = int(sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PORT", DEFAULT_PORT))
     print(f"Serving on http://localhost:{port}")
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)

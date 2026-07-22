@@ -45,23 +45,64 @@ function numFromPath() {
 
 // Comics since ~#1084 have a double-resolution variant next to the 1x file,
 // but the JSON API only carries the 1x URL — xkcd.com's own pages hardcode
-// the 2x in srcset. Offer it optimistically; when it 404s (older comics),
-// drop the srcset and reload the 1x, since browsers don't fall back between
-// srcset candidates on their own.
-function setComicImage(url) {
+// the 2x in srcset. The server scrapes which comics have one and ships the
+// verdict as `img2x` (URL, or null for definitely-none), so normally the
+// srcset is known up front and exactly one file is fetched, like xkcd.com.
+// For comics the scrape hasn't reached yet the key is absent and existence
+// is discovered with a trial request — which must not run on the visible
+// img: a 404ing srcset candidate poisons the element's density state in
+// Chromium (the 1x fallback then paints at half size), and any retry paints
+// twice. So the trial runs on a detached Image, and the visible img only
+// ever receives a settled, fully-loaded result — one paint, straight from
+// cache, already at its final size.
+let imgLoadToken = 0;
+function setComicImage(comic) {
+  const url = comic.img;
   const url2x = url.replace(/\.(png|jpe?g|gif)$/i, "_2x.$1");
-  els.img.onerror = null;
-  if (url2x !== url) {
-    els.img.onerror = () => {
-      els.img.onerror = null; // a failing 1x must not retry in a loop
-      els.img.removeAttribute("srcset");
-      els.img.src = url;
+  const token = ++imgLoadToken;
+  // The settled result goes into a brand-new <img> swapped in atomically:
+  // Chromium keeps an element's srcset density even after the attribute is
+  // removed, so reusing the node renders the next 1x-only comic at half
+  // size whenever the previous comic had a 2x (measured: 785 after 1332,
+  // naturalWidth 370 not 740). A fresh element has no such history.
+  const apply = (srcset) => {
+    if (token !== imgLoadToken) return; // user already navigated elsewhere
+    const fresh = document.createElement("img");
+    fresh.id = els.img.id;
+    fresh.className = els.img.className;
+    fresh.alt = els.img.alt;     // show() already stamped these on the old
+    fresh.title = els.img.title; // element; carry them over
+    if (srcset) fresh.srcset = srcset;
+    fresh.src = url;
+    const swap = () => {
+      if (token !== imgLoadToken) return;
+      els.img.replaceWith(fresh);
+      els.img = fresh;
     };
-    els.img.srcset = `${url2x} 2x`;
-  } else {
-    els.img.removeAttribute("srcset");
+    // decode() first so the swap never shows a blank frame; on failure swap
+    // anyway so the broken-image state is visible rather than a stale comic
+    fresh.decode().then(swap, swap);
+  };
+  if ("img2x" in comic) {
+    return apply(comic.img2x ? `${comic.img2x} 2x` : null); // scraped verdict
   }
-  els.img.src = url;
+  if (url2x === url) return apply(null);
+  const probe = new Image();
+  probe.onload = () => {
+    // Attach the srcset only if this screen actually selected the 2x file;
+    // a 1x screen never validated it, so it must not be left on the element
+    // (moving the window to a hi-DPI monitor would fetch it cold and 404).
+    apply(probe.currentSrc.includes("_2x.") ? `${url2x} 2x` : null);
+  };
+  probe.onerror = () => {
+    // 2x candidate failed: retry on a fresh element (fresh density state)
+    const retry = new Image();
+    retry.onload = () => apply(null);
+    retry.onerror = () => apply(null); // let the visible img surface the failure
+    retry.src = url;
+  };
+  probe.srcset = `${url2x} 2x`;
+  probe.src = url;
 }
 
 function show(comic, updateUrl = true) {
@@ -71,7 +112,7 @@ function show(comic, updateUrl = true) {
     history.pushState({ num: comic.num }, "", url);
   }
   els.title.textContent = comic.safe_title || comic.title;
-  setComicImage(comic.img);
+  setComicImage(comic);
   els.img.alt = comic.safe_title || comic.title;
   els.img.title = comic.alt; // hover for the alt text, like the original
   els.alt.textContent = comic.alt;

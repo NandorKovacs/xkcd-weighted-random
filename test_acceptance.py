@@ -155,6 +155,10 @@ class ServerFixture:
 
         serve.DB_PATH = os.path.join(self._tmpdir, "test.db")
         serve.DATA_FILE = os.path.join(self._tmpdir, "user-data.json")
+        # Point the 2x seed into the tmpdir (absent by default) so the repo's
+        # real 3k-comic seed doesn't leak verdicts into hermetic tests.
+        self._orig_seed_file = serve.SEED_FILE
+        serve.SEED_FILE = os.path.join(self._tmpdir, "has2x-seed.json")
         serve.fetch_upstream = self._fake
 
         # Clear the thread-local DB connection cache so that db() opens a fresh
@@ -183,6 +187,8 @@ class ServerFixture:
             serve.DB_PATH = self._orig_db_path
         if self._orig_data_file is not None:
             serve.DATA_FILE = self._orig_data_file
+        if getattr(self, "_orig_seed_file", None) is not None:
+            serve.SEED_FILE = self._orig_seed_file
         if self._orig_fetch is not None:
             serve.fetch_upstream = self._orig_fetch
         import shutil
@@ -1329,6 +1335,119 @@ class TestSync(unittest.TestCase):
         status, _, data = self.srv.get_json("/api/state", cookie=cookie)
         self.assertEqual(status, 200)
         self.assertEqual(data.get("uid"), uid)
+
+
+@SKIP_NO_SERVE
+class Test2xVerdicts(unittest.TestCase):
+    """Server-side 2x scrape: verdicts recorded once, stamped into responses.
+
+    scrape_missing_2x() HEAD-probes each archive comic's _2x URL exactly once
+    (off the request path), records the verdict in the has2x table, and
+    with_img2x() stamps it into outgoing comic JSON as "img2x".
+    """
+
+    LATEST = 20
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fake = FakeUpstream(latest_num=cls.LATEST, delay=0.0)
+        cls.srv = ServerFixture(cls.fake)
+        cls.srv.start()
+        # get_latest() caches across test classes (10-min TTL); reset so this
+        # class sees its own fake's latest, not a stale one.
+        serve._latest_num, serve._latest_ts = None, 0
+        cls._orig_head = serve.head_upstream
+        cls._orig_delay = serve.SCRAPE_DELAY
+        serve.SCRAPE_DELAY = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        serve.head_upstream = cls._orig_head
+        serve.SCRAPE_DELAY = cls._orig_delay
+        serve._latest_num, serve._latest_ts = None, 0
+        cls.srv.stop()
+
+    @staticmethod
+    def _head_even(url):
+        """Synthetic ground truth: even-numbered comics have a 2x file."""
+        m = re.search(r"x(\d+)_2x\.png$", url)
+        return int(m.group(1)) % 2 == 0
+
+    def test_scrape_records_verdicts_and_stamps_responses(self):
+        flaky = {"raised": False}
+
+        def head(url):
+            if "x5_2x" in url and not flaky["raised"]:
+                flaky["raised"] = True
+                raise ConnectionError("transient")
+            return self._head_even(url)
+
+        serve.head_upstream = head
+
+        # First pass: 1..19 probed (latest skipped), comic 5's probe fails
+        done = serve.scrape_missing_2x()
+        self.assertEqual(done, 18)
+        with self.srv.db_conn() as conn:
+            nums = {r[0] for r in conn.execute("SELECT num FROM has2x")}
+        self.assertNotIn(5, nums, "transient probe failure must not store a verdict")
+        self.assertNotIn(self.LATEST, nums, "latest is skipped until superseded")
+
+        # Second pass retries only the gap — the scrape is incremental
+        self.assertEqual(serve.scrape_missing_2x(), 1)
+        self.assertEqual(serve.scrape_missing_2x(), 0)
+
+        # Verdicts are stamped into /api/comic responses
+        _, _, even = self.srv.get_json("/api/comic/2")
+        self.assertEqual(even["img2x"], "https://imgs.xkcd.com/comics/x2_2x.png")
+        _, _, odd = self.srv.get_json("/api/comic/3")
+        self.assertIsNone(odd["img2x"])
+        _, _, latest = self.srv.get_json(f"/api/comic/{self.LATEST}")
+        self.assertNotIn("img2x", latest, "unscraped comic must omit the key")
+
+
+@SKIP_NO_SERVE
+class Test2xSeed(unittest.TestCase):
+    """has2x-seed.json import: fills verdicts on boot, never overwrites."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fake = FakeUpstream(latest_num=20, delay=0.0)
+        cls.srv = ServerFixture(cls.fake)
+        cls.srv.start()  # seed file absent at this point — table starts empty
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.stop()
+
+    def test_seed_import_is_idempotent_and_never_overwrites(self):
+        with open(serve.SEED_FILE, "w") as f:
+            json.dump({"max": 10, "has2x": [2, 4]}, f)
+
+        # A pre-existing scraper verdict must survive the import
+        with self.srv.db_conn() as conn:
+            conn.execute("INSERT INTO has2x (num, has2x) VALUES (2, 0)")
+
+        serve.init_db()  # runs the seed import
+
+        with self.srv.db_conn() as conn:
+            rows = dict(conn.execute("SELECT num, has2x FROM has2x"))
+        self.assertEqual(len(rows), 10, "seed must fill comics 1..max")
+        self.assertEqual(rows[4], 1, "listed comic gets verdict 1")
+        self.assertEqual(rows[3], 0, "unlisted comic gets verdict 0")
+        self.assertEqual(rows[2], 0, "existing verdict must not be overwritten")
+
+        serve.init_db()  # second boot: no change
+        with self.srv.db_conn() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM has2x").fetchone()[0]
+        self.assertEqual(count, 10)
+
+        # Verdicts flow into responses
+        _, _, comic = self.srv.get_json("/api/comic/4")
+        self.assertEqual(
+            comic["img2x"], "https://imgs.xkcd.com/comics/x4_2x.png"
+        )
+        _, _, beyond = self.srv.get_json("/api/comic/15")
+        self.assertNotIn("img2x", beyond, "comics beyond seed max stay unscraped")
 
 
 # ===========================================================================

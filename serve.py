@@ -294,6 +294,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.new_uid = False
 
     def end_headers(self):
+        # Static files (and index.html) must revalidate: browsers heuristically
+        # cache responses with no Cache-Control, so a deploy that changes the
+        # API contract leaves stale app.js copies calling the new server.
+        if getattr(self, "static_response", False):
+            self.send_header("Cache-Control", "no-cache")
+            self.static_response = False
         if getattr(self, "new_uid", False):
             self.send_header(
                 "Set-Cookie",
@@ -319,6 +325,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._handle_comic(int(m.group(1)))
         if re.fullmatch(r"/\d+/?", p):
             self.path = "/index.html"
+        self.static_response = True
         return super().do_GET()
 
     def do_POST(self):

@@ -11,6 +11,7 @@ const els = {
   link: document.getElementById("comic-link"),
   alt: document.getElementById("comic-alt"),
   status: document.getElementById("status"),
+  explain: document.getElementById("explain-banner"),
   settings: document.getElementById("settings"),
   settingsToggle: document.getElementById("settings-toggle"),
   settingsPanel: document.getElementById("settings-panel"),
@@ -118,6 +119,7 @@ function show(comic, updateUrl = true) {
   els.alt.textContent = comic.alt;
   els.link.href = `https://xkcd.com/${comic.num}/`;
   els.link.textContent = `https://xkcd.com/${comic.num}/`;
+  els.explain.href = `https://www.explainxkcd.com/wiki/index.php/${comic.num}`;
   document.title = `xkcd: ${comic.safe_title || comic.title}`;
 }
 

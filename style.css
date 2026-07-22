@@ -165,6 +165,26 @@ img {
   padding: 10px 0;
 }
 
+#explain-banner {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 36px;
+  height: 36px;
+  line-height: 36px;
+  border-radius: 50%;
+  font-size: 20px;
+  color: #282B30;
+  text-align: center;
+}
+
+#explain-banner:hover, #explain-banner:focus {
+  background-color: #6E7B91;
+  color: #FFF;
+  text-decoration: none;
+  box-shadow: 0 0 5px 0 gray;
+}
+
 #ctitle {
   margin: 10px;
   font-size: 21px;

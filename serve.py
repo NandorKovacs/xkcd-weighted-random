@@ -333,6 +333,8 @@ class Handler(SimpleHTTPRequestHandler):
         p = self.path.split("?")[0]
         if p == "/api/settings":
             return self._handle_settings()
+        if p == "/api/sync":
+            return self._handle_sync()
         m = re.fullmatch(r"/api/seen/(\d+)", p)
         if m:
             return self._handle_mark_seen(int(m.group(1)))
@@ -381,6 +383,7 @@ class Handler(SimpleHTTPRequestHandler):
 
         return self.send_json(200, {
             "now": now_ms(),
+            "uid": self.uid,  # doubles as the device-sync code (cookie is HttpOnly)
             "firstVisit": fv,
             "settings": {
                 "minuteAgoRatio": mar,
@@ -583,6 +586,70 @@ class Handler(SimpleHTTPRequestHandler):
         return self.send_json(200, {
             "minuteAgoRatio": mar,
             "cutoffMinutes": cm,
+        }, extra_headers={"Cache-Control": "no-store"})
+
+    # --- /api/sync ----------------------------------------------------------
+
+    def _handle_sync(self):
+        """Adopt another device's uid (the pasted sync code) on this browser.
+
+        Merges this device's history into the code's user — seen times keep
+        the more recent timestamp, first_visit keeps the earlier one, the
+        code's settings win — then re-points the cookie at the shared uid.
+        """
+        if self.uid is None:
+            return self.send_json(400, {"error": "no uid"})
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            incoming = json.loads(self.rfile.read(length))
+            code = incoming.get("code", "")
+            if not isinstance(code, str) or not UID_RE.fullmatch(code):
+                raise ValueError("code")
+        except (TypeError, ValueError, AttributeError):
+            return self.send_json(400, {"error": "bad sync code"})
+
+        conn = db()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            target = conn.execute(
+                "SELECT first_visit, minute_ago_ratio, cutoff_minutes FROM users WHERE uid=?",
+                (code,),
+            ).fetchone()
+            if target is None:
+                # Require an existing user so a typo can't silently start an
+                # empty shared history under a garbage id.
+                conn.execute("ROLLBACK")
+                return self.send_json(404, {"error": "unknown sync code"})
+            fv, mar, cm = target
+            if code != self.uid:
+                cur = conn.execute(
+                    "SELECT first_visit FROM users WHERE uid=?", (self.uid,)
+                ).fetchone()
+                if cur is not None:
+                    if cur[0] < fv:
+                        fv = cur[0]
+                        conn.execute(
+                            "UPDATE users SET first_visit=? WHERE uid=?", (fv, code)
+                        )
+                    conn.execute(
+                        "INSERT INTO seen (uid, num, ts) "
+                        "SELECT ?, num, ts FROM seen WHERE uid=? "
+                        "ON CONFLICT(uid, num) DO UPDATE SET ts = MAX(ts, excluded.ts)",
+                        (code, self.uid),
+                    )
+                    conn.execute("DELETE FROM seen WHERE uid=?", (self.uid,))
+                    conn.execute("DELETE FROM users WHERE uid=?", (self.uid,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        # Re-point this browser's cookie at the shared uid.
+        self.uid = code
+        self.new_uid = True
+        return self.send_json(200, {
+            "uid": code,
+            "settings": {"minuteAgoRatio": mar, "cutoffMinutes": cm},
         }, extra_headers={"Cache-Control": "no-store"})
 
     # --- helpers ------------------------------------------------------------

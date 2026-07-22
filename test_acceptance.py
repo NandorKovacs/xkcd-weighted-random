@@ -1218,6 +1218,119 @@ class Test13Invariants(unittest.TestCase):
             "serve.init_db() must exist for migration support")
 
 
+@SKIP_NO_SERVE
+class TestSync(unittest.TestCase):
+    """POST /api/sync — unify two devices under one uid by merging histories.
+
+    The pasted code is the other device's uid.  The current device's rows merge
+    into the code's user (seen keeps the newer ts, first_visit keeps the older
+    value, the code's settings win), the old rows are deleted, and the response
+    re-points the cookie at the shared uid.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fake = FakeUpstream(delay=0.0)
+        cls.srv = ServerFixture(cls.fake)
+        cls.srv.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.stop()
+
+    def _mk_user(self, seen: dict, first_visit=None):
+        """Mint a cookie, materialise the user row, seed seen rows directly."""
+        cookie = self.srv.new_user_cookie()
+        uid = cookie.split("=", 1)[1]
+        s, _, _ = self.srv.get("/api/state", cookie=cookie)
+        self.assertEqual(s, 200)
+        with self.srv.db_conn() as conn:
+            if first_visit is not None:
+                conn.execute(
+                    "UPDATE users SET first_visit=? WHERE uid=?", (first_visit, uid)
+                )
+            for num, ts in seen.items():
+                conn.execute(
+                    "INSERT OR REPLACE INTO seen(uid, num, ts) VALUES(?,?,?)",
+                    (uid, num, ts),
+                )
+        return cookie, uid
+
+    def _sync(self, cookie, code):
+        return self.srv.post(
+            "/api/sync", json.dumps({"code": code}).encode(), cookie=cookie
+        )
+
+    def test_sync_merges_histories_and_repoints_cookie(self):
+        """Merge: union of seen with max ts, min first_visit, old uid rows gone."""
+        a_cookie, a_uid = self._mk_user({1: 100, 2: 200}, first_visit=5000)
+        b_cookie, b_uid = self._mk_user({2: 999, 3: 300}, first_visit=1000)
+
+        status, headers, body = self._sync(b_cookie, a_uid)
+        self.assertEqual(status, 200, body)
+
+        # Cookie re-pointed at the shared uid
+        self.assertEqual(self.srv.extract_cookie(headers), a_uid)
+        data = json.loads(body)
+        self.assertEqual(data["uid"], a_uid)
+        self.assertIn("settings", data)
+        self.assertIn("no-store", headers.get("cache-control", ""))
+
+        with self.srv.db_conn() as conn:
+            merged = dict(
+                conn.execute("SELECT num, ts FROM seen WHERE uid=?", (a_uid,))
+            )
+            self.assertEqual(merged, {1: 100, 2: 999, 3: 300},
+                "seen merge must union rows and keep the newer ts on conflict")
+            self.assertEqual(
+                conn.execute("SELECT COUNT(*) FROM seen WHERE uid=?", (b_uid,)).fetchone()[0],
+                0, "old uid's seen rows must be deleted")
+            self.assertIsNone(
+                conn.execute("SELECT uid FROM users WHERE uid=?", (b_uid,)).fetchone(),
+                "old uid's user row must be deleted")
+            fv = conn.execute(
+                "SELECT first_visit FROM users WHERE uid=?", (a_uid,)
+            ).fetchone()[0]
+            self.assertEqual(fv, 1000, "first_visit must keep the earlier value")
+
+    def test_sync_unknown_code_is_404(self):
+        """A well-formed but unknown code must not create an empty shared user."""
+        b_cookie, b_uid = self._mk_user({7: 700})
+        ghost = "no-such-uid-abcdefghijklmnop"
+        status, headers, body = self._sync(b_cookie, ghost)
+        self.assertEqual(status, 404)
+        self.assertIsNone(self.srv.extract_cookie(headers),
+            "must not re-point the cookie on a failed sync")
+        with self.srv.db_conn() as conn:
+            self.assertIsNone(
+                conn.execute("SELECT uid FROM users WHERE uid=?", (ghost,)).fetchone())
+            # B's data untouched
+            self.assertEqual(self.srv.seen_count(b_uid), 1)
+
+    def test_sync_malformed_code_is_400(self):
+        """Codes failing the uid regex (too short, bad chars) are rejected."""
+        b_cookie, _ = self._mk_user({})
+        for bad in ("short", "has spaces in it which is bad", "", 42):
+            status, _, _ = self._sync(b_cookie, bad)
+            self.assertEqual(status, 400, f"code {bad!r} should be rejected")
+
+    def test_sync_to_own_code_is_noop(self):
+        """Pasting your own code succeeds and loses nothing."""
+        a_cookie, a_uid = self._mk_user({5: 500})
+        status, _, body = self._sync(a_cookie, a_uid)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["uid"], a_uid)
+        self.assertEqual(self.srv.seen_count(a_uid), 1)
+
+    def test_state_exposes_uid_as_sync_code(self):
+        """/api/state returns the uid so the client can display the sync code."""
+        cookie = self.srv.new_user_cookie()
+        uid = cookie.split("=", 1)[1]
+        status, _, data = self.srv.get_json("/api/state", cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(data.get("uid"), uid)
+
+
 # ===========================================================================
 # Entry point
 # ===========================================================================

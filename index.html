@@ -44,6 +44,17 @@
         <input type="number" id="set-cutoff-mins" class="cutoff-field" min="0" step="1" value="0"> min
       </div>
       <small>comics seen longer ago count as unseen again (all zero = never forget)</small>
+      <label for="sync-code">Sync devices</label>
+      <div class="setting-row">
+        <input type="text" id="sync-code" readonly>
+        <button type="button" id="sync-copy" class="sync-btn">Copy</button>
+      </div>
+      <small>copy this code and enter it on another device to share one seen-history</small>
+      <div class="setting-row">
+        <input type="text" id="sync-paste" placeholder="code from other device">
+        <button type="button" id="sync-link" class="sync-btn">Link</button>
+      </div>
+      <small id="sync-status">linking merges this device's history into the code's</small>
     </div>
   </div>
 

@@ -18,6 +18,11 @@ const els = {
   cutoffDays: document.getElementById("set-cutoff-days"),
   cutoffHours: document.getElementById("set-cutoff-hours"),
   cutoffMins: document.getElementById("set-cutoff-mins"),
+  syncCode: document.getElementById("sync-code"),
+  syncCopy: document.getElementById("sync-copy"),
+  syncPaste: document.getElementById("sync-paste"),
+  syncLink: document.getElementById("sync-link"),
+  syncStatus: document.getElementById("sync-status"),
 };
 
 function markSeen(num) {
@@ -185,8 +190,44 @@ document.addEventListener("click", (e) => {
 );
 
 fetchJson("/api/state")
-  .then((state) => renderSettings(state.settings))
+  .then((state) => {
+    renderSettings(state.settings);
+    els.syncCode.value = state.uid; // the sync code IS the uid (cookie is HttpOnly)
+  })
   .catch(() => {}); // controls keep their markup defaults
+
+// --- device sync ---
+
+els.syncCopy.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(els.syncCode.value);
+  } catch {
+    els.syncCode.select(); // clipboard API needs a secure context; fall back
+    document.execCommand("copy");
+  }
+  els.syncStatus.textContent = "copied ✓ — paste it on the other device";
+});
+
+els.syncLink.addEventListener("click", async () => {
+  const code = els.syncPaste.value.trim();
+  if (!code) return;
+  els.syncStatus.textContent = "linking…";
+  try {
+    const resp = await fetch("/api/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    renderSettings(data.settings); // the linked account's settings win
+    els.syncCode.value = data.uid;
+    els.syncPaste.value = "";
+    els.syncStatus.textContent = "linked ✓ — this device now shares that history";
+  } catch (e) {
+    els.syncStatus.textContent = `link failed: ${e.message}`;
+  }
+});
 
 // back/forward: load the comic encoded in the URL ("/" = the newest one)
 // without touching the history again.

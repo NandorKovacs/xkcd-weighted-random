@@ -1450,6 +1450,105 @@ class Test2xSeed(unittest.TestCase):
         self.assertNotIn("img2x", beyond, "comics beyond seed max stay unscraped")
 
 
+@SKIP_NO_SERVE
+class TestOpenGraphPermalink(unittest.TestCase):
+    """/<num> serves the app HTML with that comic's Open Graph card.
+
+    Crawlers don't run app.js, so a shared permalink only unfurls if the
+    server stamps the tags in. The card carries the comic and nothing else.
+    """
+
+    LATEST = 20
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fake = FakeUpstream(latest_num=cls.LATEST, delay=0.0)
+        cls.srv = ServerFixture(cls.fake)
+        cls.srv.start()
+        serve._latest_num, serve._latest_ts = None, 0  # 10-min TTL leaks across classes
+        for n in range(1, cls.LATEST):
+            cls.srv.insert_comic(n)
+        with cls.srv.db_conn() as conn:  # comic 6 has a 2x file, comic 7 does not
+            conn.execute("INSERT OR REPLACE INTO has2x (num, has2x) VALUES (6, 1), (7, 0)")
+
+    @classmethod
+    def tearDownClass(cls):
+        serve._latest_num, serve._latest_ts = None, 0
+        cls.srv.stop()
+
+    def _meta(self, path, headers=None):
+        """(headers, html, {property: content} for every og:/twitter: tag)."""
+        status, resp_headers, body = self.srv.get(path, headers=headers)
+        self.assertEqual(status, 200, f"{path} returned {status}")
+        text = body.decode()
+        tags = dict(
+            re.findall(
+                r'<meta (?:property|name)="((?:og|twitter):[^"]+)" content="([^"]*)">',
+                text,
+            )
+        )
+        return resp_headers, text, tags
+
+    def test_permalink_card_is_the_comic(self):
+        _, text, tags = self._meta("/7/")
+        self.assertEqual(tags.get("og:title"), "xkcd: Title 7")
+        self.assertEqual(tags.get("og:image"), "https://imgs.xkcd.com/comics/x7.png")
+        self.assertEqual(tags.get("og:image:alt"), "Title 7")
+        self.assertEqual(tags.get("twitter:card"), "summary_large_image")
+        # Only the comic: no description, and nothing about this site
+        self.assertNotIn("og:description", tags)
+        self.assertNotIn("xkcd-logo.png", tags.get("og:image", ""))
+        # The page itself is still the app
+        self.assertIn('<script src="/app.js"></script>', text)
+        self.assertIn("<title>xkcd: Title 7</title>", text)
+
+    def test_card_prefers_the_2x_image_when_one_exists(self):
+        _, _, tags = self._meta("/6/")
+        self.assertEqual(tags.get("og:image"), "https://imgs.xkcd.com/comics/x6_2x.png")
+
+    def test_og_url_follows_the_forwarded_scheme_and_host(self):
+        _, _, tags = self._meta(
+            "/7/",
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "xkcd.example"},
+        )
+        self.assertEqual(tags.get("og:url"), "https://xkcd.example/7/")
+
+    def test_missing_comic_still_serves_the_app(self):
+        """404 doesn't exist, so it gets no card — but the page must load."""
+        status, headers, body = self.srv.get("/404/")
+        self.assertEqual(status, 200)
+        self.assertIn("html", headers.get("content-type", "").lower())
+        self.assertNotIn("og:image", body.decode())
+        self.assertIn('<script src="/app.js"></script>', body.decode())
+
+    def test_content_length_matches_the_injected_body(self):
+        _, headers, body = self.srv.get("/7/")
+        self.assertEqual(int(headers["content-length"]), len(body))
+        self.assertEqual(headers.get("cache-control"), "no-cache")
+
+    def test_head_on_a_permalink_matches_the_get(self):
+        """Unfurlers that probe with HEAD must not see a 404."""
+        conn = self.srv._make_conn()
+        conn.request("HEAD", "/7/")
+        resp = conn.getresponse()
+        head_headers = {k.lower(): v for k, v in resp.getheaders()}
+        head_body = resp.read()
+        conn.close()
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(head_body, b"", "HEAD must not carry a body")
+        _, get_headers, get_body = self.srv.get("/7/")
+        self.assertEqual(
+            head_headers["content-length"], get_headers["content-length"],
+            "HEAD must advertise the length GET would send")
+        self.assertEqual(int(head_headers["content-length"]), len(get_body))
+
+    def test_root_and_static_are_untouched(self):
+        _, _, root = self.srv.get("/")
+        self.assertNotIn(b"og:image", root, "/ is not a permalink; no card")
+        status, _, css = self.srv.get("/style.css")
+        self.assertEqual(status, 200)
+
+
 # ===========================================================================
 # Entry point
 # ===========================================================================

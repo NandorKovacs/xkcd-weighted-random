@@ -28,7 +28,11 @@ proxies `/api/latest` and `/api/comic/<n>` to xkcd.com.)
 - Comic #404 is skipped, because it famously doesn't exist.
 
 The current comic is encoded in the URL like on xkcd.com (e.g. `/614/`), so
-links are shareable and the browser's back/forward buttons work.
+links are shareable and the browser's back/forward buttons work. Sharing one
+unfurls as the comic: the server stamps that comic's Open Graph tags into the
+HTML it serves for a `/<num>` URL (crawlers don't run the app, so the page
+can't fill them in itself). The card is just the comic — its image, at 2x
+where one exists, and its title.
 
 Two per-user settings (the **Settings** dropdown, top right) tune this:
 

@@ -5,6 +5,7 @@ Users are identified by a cookie (no login). Seen-history and settings are
 stored in SQLite (data.db). Comic JSON is cached in the DB so upstream is
 only called on a miss.
 """
+import html
 import json
 import math
 import os
@@ -450,6 +451,75 @@ def with_img2x(body):
 
 
 # ---------------------------------------------------------------------------
+# Open Graph preview cards for /<num> permalinks
+# ---------------------------------------------------------------------------
+# A shared /614/ link should unfurl as comic 614. Crawlers don't run app.js,
+# so the comic can't be the one that fills the tags in — the server stamps
+# them into the HTML it serves for a permalink instead. The card is
+# deliberately only the comic: its image and its title, nothing about this
+# site, so a shared link reads the way an xkcd link should.
+
+INDEX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+
+
+def og_meta(comic, page_url):
+    """Open Graph markup for one comic JSON dict, as an HTML fragment."""
+    title = comic.get("safe_title") or comic.get("title") or f"xkcd {comic.get('num')}"
+    # The 2x file when the scrape says there is one: preview cards get
+    # rendered wider than a comic's native size on most platforms.
+    img = comic.get("img2x") or comic.get("img")
+    tags = [("og:type", "article"), ("og:title", f"xkcd: {title}")]
+    if page_url:
+        tags.append(("og:url", page_url))
+    if img:
+        # og:image:alt mirrors what app.js puts on the visible <img>: the
+        # title, not the hover text — the card shows the comic, not prose.
+        tags += [("og:image", img), ("og:image:alt", title)]
+    out = "".join(
+        f'  <meta property="{k}" content="{html.escape(v)}">\n' for k, v in tags
+    )
+    if img:
+        out += '  <meta name="twitter:card" content="summary_large_image">\n'
+    return out
+
+
+def index_with_og(num, page_url):
+    """index.html for comic `num` with its preview tags stamped into <head>.
+
+    Returns None when the comic can't be resolved; the caller then serves the
+    plain page, which still works — the app fetches the comic client-side.
+    The comic JSON is almost always a DB hit (the 2x scrape warms the whole
+    archive), so this costs an upstream call only for the newest comic.
+    """
+    if num == MISSING_COMIC:
+        return None
+    body = resolve_comic(num, get_latest())
+    if body is None:
+        return None
+    try:
+        comic = json.loads(with_img2x(body))
+    except ValueError:
+        return None
+    try:
+        with open(INDEX_FILE, "rb") as f:
+            page = f.read().decode()
+    except OSError:
+        return None
+    page = page.replace("</head>", og_meta(comic, page_url) + "</head>", 1)
+    title = comic.get("safe_title") or comic.get("title")
+    if title:
+        # Also what app.js sets once it loads — doing it here spares the tab
+        # a title flash, and gives scrapers that ignore og: the right name.
+        page = re.sub(
+            r"<title>.*?</title>",
+            lambda m: f"<title>xkcd: {html.escape(title)}</title>",
+            page,
+            count=1,
+        )
+    return page.encode()
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler
 # ---------------------------------------------------------------------------
 
@@ -512,10 +582,48 @@ class Handler(SimpleHTTPRequestHandler):
         m = re.fullmatch(r"/api/comic/(\d+)", p)
         if m:
             return self._handle_comic(int(m.group(1)))
-        if re.fullmatch(r"/\d+/?", p):
-            self.path = "/index.html"
+        m = re.fullmatch(r"/(\d+)/?", p)
+        if m:
+            return self._handle_permalink(int(m.group(1)))
         self.static_response = True
         return super().do_GET()
+
+    def do_HEAD(self):
+        # Some unfurlers probe with HEAD before fetching the page; without
+        # this the permalink route only exists for GET and they'd see a 404.
+        self.resolve_uid()
+        m = re.fullmatch(r"/(\d+)/?", self.path.split("?")[0])
+        if m:
+            return self._handle_permalink(int(m.group(1)), body=False)
+        self.static_response = True
+        return super().do_HEAD()
+
+    # --- /<num> permalink ---------------------------------------------------
+
+    def _page_url(self):
+        """This request's absolute URL, for og:url. Empty if Host is absent."""
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host")
+        if not host:
+            return ""
+        scheme = self.headers.get("X-Forwarded-Proto", "http")
+        return f"{scheme}://{host}{self.path.split('?')[0]}"
+
+    def _handle_permalink(self, num, body=True):
+        """Serve the app HTML with this comic's preview card stamped in."""
+        page = index_with_og(num, self._page_url())
+        if page is None:
+            self.path = "/index.html"  # unresolvable: plain app, still works
+            self.static_response = True
+            return super().do_GET() if body else super().do_HEAD()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        # Same revalidation rule as the static index: the tags in here go
+        # stale the moment the page or the comic's 2x verdict changes.
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Length", str(len(page)))
+        self.end_headers()
+        if body:
+            self.wfile.write(page)
 
     def do_POST(self):
         self.resolve_uid()

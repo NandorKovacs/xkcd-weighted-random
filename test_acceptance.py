@@ -1495,8 +1495,9 @@ class TestOpenGraphPermalink(unittest.TestCase):
         self.assertEqual(tags.get("og:image"), "https://imgs.xkcd.com/comics/x7.png")
         self.assertEqual(tags.get("og:image:alt"), "Title 7")
         self.assertEqual(tags.get("twitter:card"), "summary_large_image")
-        # Only the comic: no description, and nothing about this site
-        self.assertNotIn("og:description", tags)
+        # The description is the hover text, the comic's own punchline
+        self.assertEqual(tags.get("og:description"), "Alt text for 7")
+        # Only the comic: nothing about this site
         self.assertNotIn("xkcd-logo.png", tags.get("og:image", ""))
         # The page itself is still the app
         self.assertIn('<script src="/app.js"></script>', text)

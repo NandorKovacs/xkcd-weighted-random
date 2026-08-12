@@ -456,8 +456,8 @@ def with_img2x(body):
 # A shared /614/ link should unfurl as comic 614. Crawlers don't run app.js,
 # so the comic can't be the one that fills the tags in — the server stamps
 # them into the HTML it serves for a permalink instead. The card is
-# deliberately only the comic: its image and its title, nothing about this
-# site, so a shared link reads the way an xkcd link should.
+# deliberately only the comic — its image, title and hover text, nothing
+# about this site — so a shared link reads the way an xkcd link should.
 
 INDEX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
 
@@ -469,6 +469,11 @@ def og_meta(comic, page_url):
     # rendered wider than a comic's native size on most platforms.
     img = comic.get("img2x") or comic.get("img")
     tags = [("og:type", "article"), ("og:title", f"xkcd: {title}")]
+    # The hover text is the punchline; on a card it's the one line of prose
+    # that belongs there.
+    alt = comic.get("alt")
+    if alt:
+        tags.append(("og:description", alt))
     if page_url:
         tags.append(("og:url", page_url))
     if img:

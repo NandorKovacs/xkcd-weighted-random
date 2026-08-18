@@ -41,6 +41,10 @@ UNSEEN_HEAD_START = 30 * 24 * 60 * 60 * 1000  # 30 days in ms
 MISSING_COMIC = 404
 MINUTE_MS = 60000
 
+# Easter egg: the /random *page* is not random at all (the Random button uses
+# /api/random, which is). xkcd 221: return 4; chosen by fair dice roll.
+DICE_ROLL_COMIC = 4
+
 
 def now_ms():
     return int(time.time() * 1000)
@@ -590,6 +594,8 @@ class Handler(SimpleHTTPRequestHandler):
         m = re.fullmatch(r"/(\d+)/?", p)
         if m:
             return self._handle_permalink(int(m.group(1)))
+        if re.fullmatch(r"/random/?", p):
+            return self._handle_permalink(DICE_ROLL_COMIC)
         self.static_response = True
         return super().do_GET()
 
@@ -597,9 +603,12 @@ class Handler(SimpleHTTPRequestHandler):
         # Some unfurlers probe with HEAD before fetching the page; without
         # this the permalink route only exists for GET and they'd see a 404.
         self.resolve_uid()
-        m = re.fullmatch(r"/(\d+)/?", self.path.split("?")[0])
+        p = self.path.split("?")[0]
+        m = re.fullmatch(r"/(\d+)/?", p)
         if m:
             return self._handle_permalink(int(m.group(1)), body=False)
+        if re.fullmatch(r"/random/?", p):
+            return self._handle_permalink(DICE_ROLL_COMIC, body=False)
         self.static_response = True
         return super().do_HEAD()
 

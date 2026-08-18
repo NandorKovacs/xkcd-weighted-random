@@ -4,6 +4,7 @@
 // auto-assigned cookie (no login) and stores the timestamps under that id.
 
 const MISSING_COMIC = 404;           // xkcd 404 famously does not exist
+const DICE_ROLL_COMIC = 4;           // xkcd 221: chosen by fair dice roll
 
 const els = {
   title: document.getElementById("ctitle"),
@@ -40,6 +41,10 @@ let latestNum = null;
 let currentNum = null;
 
 function numFromPath() {
+  // /random is an easter egg, not a redirect: it stays in the URL bar and
+  // always resolves to xkcd 221's fair dice roll. The Random *button* still
+  // goes through /api/random, which really is random.
+  if (/^\/random\/?$/.test(location.pathname)) return DICE_ROLL_COMIC;
   const m = location.pathname.match(/^\/(\d+)\/?$/);
   return m ? Number(m[1]) : null;
 }
